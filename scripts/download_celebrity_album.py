@@ -23,7 +23,6 @@ import csv
 import json
 import logging
 import re
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -139,7 +138,9 @@ def main() -> int:
 
     if args.clean:
         for d in (args.album_dir, args.queries_dir):
-            shutil.rmtree(d, ignore_errors=True)
+            for f in d.glob("*"):
+                if f.is_file() and f.name != ".gitkeep":
+                    f.unlink()
     args.album_dir.mkdir(parents=True, exist_ok=True)
     args.queries_dir.mkdir(parents=True, exist_ok=True)
 
