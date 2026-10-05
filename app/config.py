@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_dir: Path = BASE_DIR / "logs"
 
-    # Gallery: the directory of reference images and the .npz file of their embeddings.
-    gallery_dir: Path = BASE_DIR / "data" / "images"
-    embeddings_path: Path = BASE_DIR / "data" / "embeddings" / "gallery.npz"
+    # Album: one flat directory of photos, and the .npz holding an embedding per face.
+    album_dir: Path = BASE_DIR / "data" / "album"
+    embeddings_path: Path = BASE_DIR / "data" / "embeddings" / "album.npz"
 
     # InsightFace model pack. buffalo_l = RetinaFace detector + ArcFace (ResNet50) recognizer.
     model_name: str = "buffalo_l"
@@ -36,8 +36,8 @@ class Settings(BaseSettings):
 
     # Cosine similarity cut-off for a "match". ArcFace same-person pairs typically score > 0.4.
     match_threshold: float = 0.45
-    default_top_k: int = 5
-    max_top_k: int = 50
+    default_top_k: int = 20
+    max_top_k: int = 200
     max_upload_mb: int = 10
 
     @property

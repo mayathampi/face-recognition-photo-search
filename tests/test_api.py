@@ -1,117 +1,206 @@
-"""API tests. A fake engine stands in for InsightFace, so no model download is needed."""
+"""API + album sync tests. A fake engine stands in for InsightFace, so no model download is needed.
+
+Test photos are tiny solid-colour PNGs; the fake engine reads the colour value and returns
+the faces registered for it, so each "photo" can contain any set of people.
+"""
 
 import cv2
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.main import create_app
+from app.ml_module.album import sync_album
 from app.ml_module.embedding_store import EmbeddingStore
 from app.ml_module.face_engine import DetectedFace
 
 DIM = 512
 
 
-def unit(seed: int) -> np.ndarray:
+def person(seed: int) -> np.ndarray:
     v = np.random.default_rng(seed).standard_normal(DIM).astype(np.float32)
     return v / np.linalg.norm(v)
 
 
-class FakeEngine:
-    """Returns a fixed face embedding chosen per test."""
+ALICE, BOB, CAROL, DAVE = person(1), person(2), person(3), person(4)
 
+
+def face(embedding: np.ndarray, size: float = 100.0) -> DetectedFace:
+    return DetectedFace(embedding=embedding, bbox=(10.0, 10.0, 10.0 + size, 10.0 + size), det_score=0.99)
+
+
+class FakeEngine:
     model_name = "fake"
     is_loaded = True
 
     def __init__(self):
-        self.faces: list[DetectedFace] = []
+        self.by_colour: dict[int, list[DetectedFace]] = {}
+        self.calls = 0
 
     def detect(self, image):
-        return self.faces
+        self.calls += 1
+        return self.by_colour.get(int(image[0, 0, 0]), [])
 
 
-def face(embedding: np.ndarray) -> DetectedFace:
-    return DetectedFace(embedding=embedding, bbox=(10.0, 10.0, 110.0, 110.0), det_score=0.99)
-
-
-def png_bytes() -> bytes:
-    ok, buf = cv2.imencode(".png", np.zeros((32, 32, 3), dtype=np.uint8))
+def png(colour: int) -> bytes:
+    ok, buf = cv2.imencode(".png", np.full((16, 16, 3), colour, dtype=np.uint8))
     assert ok
     return buf.tobytes()
 
 
 @pytest.fixture
+def album_dir(tmp_path, monkeypatch):
+    d = tmp_path / "album"
+    d.mkdir()
+    monkeypatch.setattr(get_settings(), "album_dir", d)
+    return d
+
+
+@pytest.fixture
 def engine():
-    return FakeEngine()
+    e = FakeEngine()
+    e.by_colour = {
+        10: [face(ALICE, 120), face(BOB, 80)],  # group photo: alice + bob
+        20: [face(BOB)],  # bob alone
+        30: [face(ALICE), face(CAROL), face(BOB, 50)],  # alice, carol, bob
+        40: [],  # landscape, no faces
+        50: [face(DAVE)],  # query-only person, never in the album
+    }
+    return e
 
 
 @pytest.fixture
 def store(tmp_path):
-    s = EmbeddingStore(tmp_path / "gallery.npz")
-    s.save(np.stack([unit(1), unit(2), unit(3)]), ["alice/1.jpg", "bob.jpg", "carol.png"], "fake")
-    return s
+    return EmbeddingStore(tmp_path / "album.npz")
 
 
 @pytest.fixture
-def client(engine, store):
-    with TestClient(create_app(engine=engine, store=store)) as c:
+def populated(album_dir, engine, store):
+    (album_dir / "party.png").write_bytes(png(10))
+    (album_dir / "bob.png").write_bytes(png(20))
+    (album_dir / "trip.png").write_bytes(png(30))
+    (album_dir / "beach.png").write_bytes(png(40))
+    (album_dir / "notes.txt").write_text("ignored")
+    sync_album(engine, store, album_dir)
+    return store
+
+
+@pytest.fixture
+def client(engine, populated):
+    with TestClient(create_app(engine=engine, store=populated)) as c:
         yield c
 
 
-def upload(client, **params):
-    return client.post("/api/v1/match", params=params,
-                       files={"file": ("q.png", png_bytes(), "image/png")})
+def query(client, colour: int, **params):
+    return client.post("/api/v1/match", params=params, files={"file": ("q.png", png(colour), "image/png")})
 
+
+# ── album sync ───────────────────────────────────────────────────────────────
+
+def test_sync_stores_every_face(populated):
+    data = populated.data
+    assert populated.photo_count == 4  # beach.png has no faces but is still registered
+    assert populated.face_count == 6  # 2 + 1 + 3 + 0
+    assert data.faces_per_photo() == {"party.png": 2, "bob.png": 1, "trip.png": 3, "beach.png": 0}
+
+
+def test_sync_is_incremental(album_dir, engine, populated):
+    engine.calls = 0
+    report = sync_album(engine, populated, album_dir)
+    assert engine.calls == 0
+    assert not report.changed and report.unchanged_count == 4
+
+    (album_dir / "new.png").write_bytes(png(20))  # add
+    (album_dir / "bob.png").write_bytes(png(10))  # change content
+    (album_dir / "trip.png").unlink()  # delete
+    report = sync_album(engine, populated, album_dir)
+
+    assert engine.calls == 2  # only new.png and bob.png were embedded
+    assert report.added == ["new.png"]
+    assert report.updated == ["bob.png"]
+    assert report.removed == ["trip.png"]
+    assert report.unchanged_count == 2
+    assert populated.data.faces_per_photo() == {"party.png": 2, "bob.png": 2, "beach.png": 0, "new.png": 1}
+
+
+def test_sync_persists_to_npz(album_dir, engine, populated):
+    reloaded = EmbeddingStore(populated.path)
+    assert reloaded.load()
+    assert reloaded.data.faces_per_photo() == populated.data.faces_per_photo()
+    # Reloaded store is still incremental.
+    engine.calls = 0
+    sync_album(engine, reloaded, album_dir)
+    assert engine.calls == 0
+
+
+def test_full_sync_reembeds_everything(album_dir, engine, populated):
+    engine.calls = 0
+    report = sync_album(engine, populated, album_dir, full=True)
+    assert report.full_rebuild and engine.calls == 4
+    assert populated.face_count == 6
+
+
+def test_undecodable_photo_is_reported_and_retried(album_dir, engine, populated):
+    (album_dir / "broken.jpg").write_bytes(b"not an image")
+    report = sync_album(engine, populated, album_dir)
+    assert "broken.jpg" in report.failed
+    assert "broken.jpg" not in populated.data.photo_hashes
+    assert "broken.jpg" in sync_album(engine, populated, album_dir).failed
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
 
 def test_health(client):
-    body = client.get("/api/v1/health").json()
-    assert body == {"status": "ok", "model_loaded": True, "gallery_ready": True, "gallery_size": 3}
+    assert client.get("/api/v1/health").json() == {
+        "status": "ok", "model_loaded": True, "album_ready": True, "photo_count": 4, "face_count": 6,
+    }
 
 
-def test_gallery_info(client):
-    body = client.get("/api/v1/gallery").json()
-    assert body["size"] == 3
-    assert body["filenames"] == ["alice/1.jpg", "bob.jpg", "carol.png"]
+def test_album_info(client):
+    body = client.get("/api/v1/album").json()
+    assert body["face_count"] == 6
+    assert {p["filename"]: p["face_count"] for p in body["photos"]}["trip.png"] == 3
 
 
-def test_match_returns_same_person_first(client, engine):
-    # A slightly perturbed copy of bob's embedding should match bob.
-    noisy = unit(2) + 0.05 * unit(99)
-    engine.faces = [face(noisy / np.linalg.norm(noisy))]
-
-    body = upload(client).json()
+def test_match_returns_every_photo_with_the_person(client):
+    body = query(client, 20).json()  # bob
     matches = body["results"][0]["matches"]
-    assert matches[0]["filename"] == "bob.jpg"
-    assert matches[0]["label"] == "bob"
-    assert matches[0]["score"] > 0.9
-    assert matches[0]["image_url"].endswith("/gallery-images/bob.jpg")
-    # Random unrelated embeddings sit near 0 cosine and are filtered by the threshold.
-    assert len(matches) == 1
+    assert sorted(m["filename"] for m in matches) == ["bob.png", "party.png", "trip.png"]
+    assert all(m["score"] > 0.99 for m in matches)
+    trip = next(m for m in matches if m["filename"] == "trip.png")
+    assert trip["face_bbox"] == {"x1": 10.0, "y1": 10.0, "x2": 60.0, "y2": 60.0}  # bob's face in trip.png
+    assert trip["image_url"].endswith("/album-images/trip.png")
 
 
-def test_match_label_from_folder(client, engine):
-    engine.faces = [face(unit(1))]
-    match = upload(client).json()["results"][0]["matches"][0]
-    assert match["filename"] == "alice/1.jpg"
-    assert match["label"] == "alice"
+def test_match_unknown_person_returns_nothing(client):
+    body = query(client, 50).json()
+    assert body["results"][0]["match_count"] == 0
 
 
-def test_match_threshold_and_top_k(client, engine):
-    engine.faces = [face(unit(2))]
-    body = upload(client, threshold=-1.0, top_k=2).json()
-    assert len(body["results"][0]["matches"]) == 2
+def test_match_top_k(client):
+    assert len(query(client, 20, top_k=2).json()["results"][0]["matches"]) == 2
 
 
-def test_all_faces(client, engine):
-    engine.faces = [face(unit(1)), face(unit(3))]
-    assert len(upload(client).json()["results"]) == 1
-    body = upload(client, all_faces=True).json()
-    assert [r["matches"][0]["filename"] for r in body["results"]] == ["alice/1.jpg", "carol.png"]
+def test_match_all_faces(client):
+    # Query photo with alice + bob: by default only the largest face (alice) is searched.
+    assert len(query(client, 10).json()["results"]) == 1
+    body = query(client, 10, all_faces=True).json()
+    assert [sorted(m["filename"] for m in r["matches"]) for r in body["results"]] == [
+        ["party.png", "trip.png"],  # alice
+        ["bob.png", "party.png", "trip.png"],  # bob
+    ]
 
 
-def test_no_face(client, engine):
-    engine.faces = []
-    assert upload(client).status_code == 422
+def test_sync_endpoint(client, album_dir):
+    (album_dir / "extra.png").write_bytes(png(30))
+    body = client.post("/api/v1/album/sync").json()
+    assert body["added"] == ["extra.png"]
+    assert body["total_faces"] == 9
+
+
+def test_no_face(client):
+    assert query(client, 40).status_code == 422
 
 
 def test_bad_image(client):
@@ -124,15 +213,6 @@ def test_unsupported_type(client):
     assert r.status_code == 415
 
 
-def test_empty_gallery(engine, tmp_path):
+def test_empty_album(engine, tmp_path):
     with TestClient(create_app(engine=engine, store=EmbeddingStore(tmp_path / "none.npz"))) as c:
-        assert upload(c).status_code == 503
-
-
-def test_store_roundtrip(store):
-    reloaded = EmbeddingStore(store.path)
-    assert reloaded.load()
-    assert reloaded.filenames == store.filenames
-    assert reloaded.model_name == "fake"
-    hits = reloaded.search(unit(3), top_k=1)
-    assert hits[0][0].filename == "carol.png"
+        assert query(c, 20).status_code == 503

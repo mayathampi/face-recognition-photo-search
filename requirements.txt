@@ -12,3 +12,6 @@ onnxruntime==1.23.2        # swap for onnxruntime-gpu and set CTX_ID=0 to use CU
 opencv-python-headless==5.0.0.93
 numpy==2.2.6
 faiss-cpu==1.15.1
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+requests==2.34.2               # download_celebrity_album.py

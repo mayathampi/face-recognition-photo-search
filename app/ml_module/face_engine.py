@@ -76,8 +76,7 @@ class FaceEngine:
 
     def detect(self, image: np.ndarray) -> list[DetectedFace]:
         """Detect every face in a BGR image, largest first."""
-        if self._app is None:
-            raise RuntimeError("FaceEngine.load() has not been called")
+        self.load()
         raw = self._app.get(image)
         offset = 0
         if not raw:

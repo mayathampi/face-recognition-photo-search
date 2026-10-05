@@ -7,5 +7,5 @@ __pycache__
 logs
 tests
 .pytest_cache
-data/images/*
+data/album/*
 data/embeddings/*

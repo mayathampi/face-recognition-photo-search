@@ -9,8 +9,11 @@ logs/
 .idea/
 .vscode/
 
-# Gallery images and embeddings are data, not code — keep them out of git.
-data/images/*
-!data/images/.gitkeep
+# Photos and embeddings are data, not code — keep them out of git.
+data/album/*
+!data/album/.gitkeep
 data/embeddings/*
 !data/embeddings/.gitkeep
+data/queries/
+data/album_manifest.json
+data/album_credits.csv

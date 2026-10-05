@@ -39,9 +39,10 @@ def create_app(engine: FaceEngine | None = None, store: EmbeddingStore | None = 
             real_store = EmbeddingStore(settings.embeddings_path)
             real_store.load()
             app.state.store = real_store
-        if app.state.store.model_name and app.state.store.model_name != app.state.engine.model_name:
-            logger.warning("Gallery was built with '%s' but engine uses '%s' — rebuild the gallery",
-                           app.state.store.model_name, app.state.engine.model_name)
+        album = app.state.store.data
+        if album and album.model_name != app.state.engine.model_name:
+            logger.warning("Album was embedded with '%s' but engine uses '%s' — run a full sync",
+                           album.model_name, app.state.engine.model_name)
         yield
 
     app = FastAPI(title=settings.app_name, version="1.0.0", root_path=settings.root_path, lifespan=lifespan)
@@ -61,8 +62,8 @@ def create_app(engine: FaceEngine | None = None, store: EmbeddingStore | None = 
     )
 
     app.include_router(router, prefix=settings.api_prefix)
-    app.mount("/gallery-images", StaticFiles(directory=settings.gallery_dir, check_dir=False),
-              name="gallery-images")
+    app.mount("/album-images", StaticFiles(directory=settings.album_dir, check_dir=False),
+              name="album-images")
 
     @app.get("/", include_in_schema=False)
     def root():

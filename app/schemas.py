@@ -4,21 +4,34 @@ from pydantic import BaseModel, Field
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
-    gallery_ready: bool
-    gallery_size: int
+    album_ready: bool
+    photo_count: int
+    face_count: int
 
 
-class GalleryInfo(BaseModel):
-    size: int
+class AlbumPhoto(BaseModel):
+    filename: str
+    face_count: int
+
+
+class AlbumInfo(BaseModel):
+    photo_count: int
+    face_count: int
     model_name: str | None = None
     built_at: str | None = None
-    filenames: list[str]
+    photos: list[AlbumPhoto]
 
 
-class RebuildResponse(BaseModel):
-    indexed_count: int
-    skipped_count: int
-    skipped: dict[str, str] = Field(default_factory=dict, description="filename -> reason it was skipped")
+class SyncResponse(BaseModel):
+    full_rebuild: bool
+    added: list[str]
+    updated: list[str]
+    removed: list[str]
+    unchanged_count: int
+    no_faces: list[str] = Field(..., description="Newly processed photos in which no face was found")
+    failed: dict[str, str] = Field(..., description="Photos that could not be read -> reason; retried next sync")
+    total_photos: int
+    total_faces: int
     built_at: str | None = None
 
 
@@ -29,22 +42,23 @@ class BoundingBox(BaseModel):
     y2: float
 
 
-class Match(BaseModel):
-    filename: str = Field(..., description="Path of the gallery image, relative to the gallery directory")
-    label: str = Field(..., description="Person label: parent folder name, or file stem for flat galleries")
-    score: float = Field(..., description="Cosine similarity, higher is more similar (max 1.0)")
+class PhotoMatch(BaseModel):
+    filename: str = Field(..., description="Album photo containing the person")
+    score: float = Field(..., description="Cosine similarity of the best-matching face in the photo (max 1.0)")
+    face_bbox: BoundingBox = Field(..., description="Where the matching face is in the album photo")
     image_url: str
 
 
-class FaceMatchResult(BaseModel):
+class QueryFaceResult(BaseModel):
     face_index: int
-    bbox: BoundingBox
+    bbox: BoundingBox = Field(..., description="Face location in the uploaded image")
     det_score: float
-    matches: list[Match]
+    match_count: int
+    matches: list[PhotoMatch]
 
 
 class MatchResponse(BaseModel):
     faces_detected: int
     threshold: float
     top_k: int
-    results: list[FaceMatchResult]
+    results: list[QueryFaceResult]
