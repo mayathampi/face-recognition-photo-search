@@ -49,10 +49,10 @@ python -m scripts.download_celebrity_album
 python -m scripts.build_embeddings
 
 # 3. Run the API
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
-Swagger UI: http://localhost:8000/docs
+Swagger UI: http://localhost:8001/docs
 
 ### What a sync does
 
@@ -83,57 +83,54 @@ The model pack is baked into the image at build time, so the container starts wi
 ```bash
 docker compose up --build
 # after adding photos to ./data/album:
-curl -X POST localhost:8000/api/v1/album/sync
+curl -X POST localhost:8001/album/sync
 ```
 
 Without compose:
 
 ```bash
 docker build -t facerecognition .
-docker run -p 8000:8000 -v "$PWD/data:/app/data" facerecognition
+docker run -p 8001:8001 -v "$PWD/data:/app/data" facerecognition
 ```
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
-| GET  | `/api/v1/health` | Model loaded? Photo and face counts |
-| GET  | `/api/v1/album` | Indexed photos and the number of faces in each |
-| POST | `/api/v1/album/sync` | Incremental sync, same as the script (`?full=true` to re-embed everything) |
-| POST | `/api/v1/match` | Upload an image (multipart field `file`) and get every album photo containing that person |
+| GET  | `/health` | Model loaded? Photo and face counts |
+| GET  | `/album` | Indexed photos and the number of faces in each |
+| POST | `/album/sync` | Incremental sync, same as the script (`?full=true` to re-embed everything) |
+| POST | `/match` | Upload an image (multipart field `file`) and get every album photo containing that person |
 | GET  | `/album-images/{filename}` | Serves an album photo (used for `image_url`) |
 
-`/match` query params: `threshold` (default 0.45), `top_k` (max photos returned, default 20), `all_faces` (default `false`, which searches only the largest face in the upload).
+`/match` takes one field, `file`, and no query params. The upload must contain **exactly one face**; anything else is rejected with `422`. Every album photo scoring at least `MATCH_THRESHOLD` (default 0.50) is returned, best first. If none qualifies, `matched` is `false`, `matches` is empty and `message` says so.
 
 ```bash
-curl -F "file=@data/queries/barack_obama.jpg" "localhost:8000/api/v1/match"
+curl -F "file=@data/queries/barack_obama.jpg" "localhost:8001/match"
 ```
 
 ```json
 {
-  "faces_detected": 1,
-  "threshold": 0.45,
-  "top_k": 20,
-  "results": [{
-    "face_index": 0,
-    "bbox": {"x1": 120.4, "y1": 88.1, "x2": 301.9, "y2": 320.7},
-    "det_score": 0.89,
-    "match_count": 2,
-    "matches": [
-      {"filename": "photo_014.jpg", "score": 0.7731,
-       "face_bbox": {"x1": 512.0, "y1": 140.2, "x2": 590.3, "y2": 236.8},
-       "image_url": "http://localhost:8000/album-images/photo_014.jpg"},
-      {"filename": "photo_003.jpg", "score": 0.6408,
-       "face_bbox": {"x1": 88.5, "y1": 201.0, "x2": 160.1, "y2": 290.4},
-       "image_url": "http://localhost:8000/album-images/photo_003.jpg"}
-    ]
-  }]
+  "matched": true,
+  "message": "Found this person in 2 photo(s)",
+  "threshold": 0.5,
+  "bbox": {"x1": 120.4, "y1": 88.1, "x2": 301.9, "y2": 320.7},
+  "det_score": 0.89,
+  "match_count": 2,
+  "matches": [
+    {"filename": "photo_014.jpg", "score": 0.7731,
+     "face_bbox": {"x1": 512.0, "y1": 140.2, "x2": 590.3, "y2": 236.8},
+     "image_url": "http://localhost:8001/album-images/photo_014.jpg"},
+    {"filename": "photo_003.jpg", "score": 0.6708,
+     "face_bbox": {"x1": 88.5, "y1": 201.0, "x2": 160.1, "y2": 290.4},
+     "image_url": "http://localhost:8001/album-images/photo_003.jpg"}
+  ]
 }
 ```
 
 `face_bbox` shows where the person is in that album photo. A photo appears only once, scored by its best-matching face.
 
-Errors: `400` for an undecodable image, `413` for a file over `MAX_UPLOAD_MB`, `415` for an unsupported type, `422` when no face is detected, `503` when the album is empty.
+Errors: `400` for an undecodable image, `413` for a file over `MAX_UPLOAD_MB`, `415` for anything other than `.jpg`/`.jpeg`/`.png`, `422` when the upload has no face or more than one face, `503` when the album is empty.
 
 ## `.npz` format
 

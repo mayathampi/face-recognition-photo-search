@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 
@@ -14,7 +15,6 @@ from app.schemas import (
     HealthResponse,
     MatchResponse,
     PhotoMatch,
-    QueryFaceResult,
     SyncResponse,
 )
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 # NOTE: the handlers below are plain `def`, not `async def`. Inference is CPU-bound,
 # so FastAPI runs them in its threadpool instead of blocking the event loop.
@@ -85,27 +85,29 @@ def sync(
 @router.post("/match", response_model=MatchResponse, tags=["Recognition"])
 def match_face(
     request: Request,
-    file: UploadFile = File(..., description="Image containing the face(s) to look up"),
-    top_k: int | None = Query(None, ge=1, description="Max photos returned per face"),
-    threshold: float | None = Query(None, ge=-1.0, le=1.0, description="Min cosine similarity to count as a match"),
-    all_faces: bool = Query(False, description="Search for every detected face instead of only the largest"),
+    # format=binary makes Swagger UI render a working file picker under OpenAPI 3.1.
+    file: UploadFile = File(..., description="Photo with exactly one face",
+                            json_schema_extra={"format": "binary"}),
     engine: FaceEngine = Depends(get_engine),
     store: EmbeddingStore = Depends(get_store),
     settings: Settings = Depends(get_settings),
 ):
-    """Find every album photo that contains the person in the uploaded image."""
-    top_k = min(top_k or settings.default_top_k, settings.max_top_k)
-    threshold = settings.match_threshold if threshold is None else threshold
+    """Find every album photo that contains the person in the uploaded image.
 
+    The upload must contain exactly one face.
+    """
     if not store.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Album is empty — call POST /album/sync first")
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
+    # Checked by extension: browsers don't always send a reliable content type.
+    # The bytes are still validated by decode_image below.
+    if Path(file.filename or "").suffix.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                            detail=f"Unsupported content type '{file.content_type}'")
+                            detail="Only .jpg, .jpeg and .png images are accepted")
 
     max_bytes = settings.max_upload_mb * 1024 * 1024
     data = file.file.read(max_bytes + 1)
+    logger.info("Match upload: %r (%d bytes, %s)", file.filename, len(data), file.content_type)
     if len(data) > max_bytes:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                             detail=f"Image exceeds {settings.max_upload_mb} MB")
@@ -117,26 +119,29 @@ def match_face(
 
     faces = engine.detect(image)
     if not faces:
-        raise HTTPException(status_code=422, detail="No face detected in image")
+        raise HTTPException(status_code=422, detail="No face detected in the image")
+    if len(faces) > 1:
+        raise HTTPException(status_code=422,
+                            detail=f"Found {len(faces)} faces; upload a photo with exactly one face")
 
-    results = []
-    for i, face in enumerate(faces if all_faces else faces[:1]):
-        hits = store.search_photos(face.embedding, threshold=threshold, top_k=top_k)
-        results.append(QueryFaceResult(
-            face_index=i,
-            bbox=_bbox(face.bbox),
-            det_score=round(face.det_score, 4),
-            match_count=len(hits),
-            matches=[
-                PhotoMatch(
-                    filename=hit.photo,
-                    score=round(hit.score, 4),
-                    face_bbox=_bbox(hit.bbox),
-                    image_url=str(request.url_for("album-images", path=hit.photo)),
-                )
-                for hit in hits
-            ],
-        ))
-
-    logger.info("Matched %d query face(s): %s", len(results), [r.match_count for r in results])
-    return MatchResponse(faces_detected=len(faces), threshold=threshold, top_k=top_k, results=results)
+    face = faces[0]
+    threshold = settings.match_threshold
+    hits = store.search_photos(face.embedding, threshold=threshold)
+    logger.info("Matched %d photo(s)", len(hits))
+    return MatchResponse(
+        matched=bool(hits),
+        message=f"Found this person in {len(hits)} photo(s)" if hits else "No matching photos found in the album",
+        threshold=threshold,
+        bbox=_bbox(face.bbox),
+        det_score=round(face.det_score, 4),
+        match_count=len(hits),
+        matches=[
+            PhotoMatch(
+                filename=hit.photo,
+                score=round(hit.score, 4),
+                face_bbox=_bbox(hit.bbox),
+                image_url=str(request.url_for("album-images", path=hit.photo)),
+            )
+            for hit in hits
+        ],
+    )

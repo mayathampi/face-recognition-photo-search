@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Face Recognition API"
-    api_prefix: str = "/api/v1"
     # Set when running behind a reverse proxy that strips a path prefix (e.g. /backend).
     root_path: str = ""
     # Comma-separated list of allowed origins, or "*".
@@ -34,10 +33,9 @@ class Settings(BaseSettings):
     # Faces detected below this confidence are ignored.
     min_det_score: float = 0.5
 
-    # Cosine similarity cut-off for a "match". ArcFace same-person pairs typically score > 0.4.
-    match_threshold: float = 0.45
-    default_top_k: int = 20
-    max_top_k: int = 200
+    # Cosine similarity cut-off for a "match". On the sample album, true matches score >= 0.505
+    # and the closest wrong match 0.458, so 0.50 keeps every true match with no false ones.
+    match_threshold: float = 0.50
     max_upload_mb: int = 10
 
     @property

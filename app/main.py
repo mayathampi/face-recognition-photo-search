@@ -61,7 +61,7 @@ def create_app(engine: FaceEngine | None = None, store: EmbeddingStore | None = 
         allow_headers=["*"],
     )
 
-    app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(router)
     app.mount("/album-images", StaticFiles(directory=settings.album_dir, check_dir=False),
               name="album-images")
 

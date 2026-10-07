@@ -150,7 +150,7 @@ class EmbeddingStore:
         self._snapshot = _Snapshot(data=data, index=index)
 
     # ── search ───────────────────────────────────────────────────────────────
-    def search_photos(self, query: np.ndarray, threshold: float, top_k: int) -> list[PhotoHit]:
+    def search_photos(self, query: np.ndarray, threshold: float) -> list[PhotoHit]:
         """Photos containing a face with cosine similarity >= threshold, best first.
 
         A photo appears once, scored by its best-matching face.
@@ -169,7 +169,7 @@ class EmbeddingStore:
             if photo not in best or score > best[photo].score:
                 bbox = tuple(float(v) for v in snapshot.data.face_bbox[idx])
                 best[photo] = PhotoHit(photo=photo, score=float(score), bbox=bbox)
-        return sorted(best.values(), key=lambda h: h.score, reverse=True)[:top_k]
+        return sorted(best.values(), key=lambda h: h.score, reverse=True)
 
 
 def _as_matrix(embeddings: np.ndarray) -> np.ndarray:

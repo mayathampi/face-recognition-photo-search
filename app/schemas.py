@@ -49,16 +49,11 @@ class PhotoMatch(BaseModel):
     image_url: str
 
 
-class QueryFaceResult(BaseModel):
-    face_index: int
+class MatchResponse(BaseModel):
+    matched: bool
+    message: str
+    threshold: float
     bbox: BoundingBox = Field(..., description="Face location in the uploaded image")
     det_score: float
     match_count: int
     matches: list[PhotoMatch]
-
-
-class MatchResponse(BaseModel):
-    faces_detected: int
-    threshold: float
-    top_k: int
-    results: list[QueryFaceResult]

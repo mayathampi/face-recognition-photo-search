@@ -93,7 +93,7 @@ def client(engine, populated):
 
 
 def query(client, colour: int, **params):
-    return client.post("/api/v1/match", params=params, files={"file": ("q.png", png(colour), "image/png")})
+    return client.post("/match", params=params, files={"file": ("q.png", png(colour), "image/png")})
 
 
 # ── album sync ───────────────────────────────────────────────────────────────
@@ -152,21 +152,22 @@ def test_undecodable_photo_is_reported_and_retried(album_dir, engine, populated)
 # ── API ──────────────────────────────────────────────────────────────────────
 
 def test_health(client):
-    assert client.get("/api/v1/health").json() == {
+    assert client.get("/health").json() == {
         "status": "ok", "model_loaded": True, "album_ready": True, "photo_count": 4, "face_count": 6,
     }
 
 
 def test_album_info(client):
-    body = client.get("/api/v1/album").json()
+    body = client.get("/album").json()
     assert body["face_count"] == 6
     assert {p["filename"]: p["face_count"] for p in body["photos"]}["trip.png"] == 3
 
 
 def test_match_returns_every_photo_with_the_person(client):
     body = query(client, 20).json()  # bob
-    matches = body["results"][0]["matches"]
+    matches = body["matches"]
     assert sorted(m["filename"] for m in matches) == ["bob.png", "party.png", "trip.png"]
+    assert body["matched"] is True and body["match_count"] == 3
     assert all(m["score"] > 0.99 for m in matches)
     trip = next(m for m in matches if m["filename"] == "trip.png")
     assert trip["face_bbox"] == {"x1": 10.0, "y1": 10.0, "x2": 60.0, "y2": 60.0}  # bob's face in trip.png
@@ -175,26 +176,23 @@ def test_match_returns_every_photo_with_the_person(client):
 
 def test_match_unknown_person_returns_nothing(client):
     body = query(client, 50).json()
-    assert body["results"][0]["match_count"] == 0
+    assert body["matched"] is False and body["matches"] == []
+    assert body["message"] == "No matching photos found in the album"
 
 
-def test_match_top_k(client):
-    assert len(query(client, 20, top_k=2).json()["results"][0]["matches"]) == 2
+def test_match_uses_configured_threshold(client):
+    assert query(client, 20).json()["threshold"] == get_settings().match_threshold
 
 
-def test_match_all_faces(client):
-    # Query photo with alice + bob: by default only the largest face (alice) is searched.
-    assert len(query(client, 10).json()["results"]) == 1
-    body = query(client, 10, all_faces=True).json()
-    assert [sorted(m["filename"] for m in r["matches"]) for r in body["results"]] == [
-        ["party.png", "trip.png"],  # alice
-        ["bob.png", "party.png", "trip.png"],  # bob
-    ]
+def test_match_rejects_multiple_faces(client):
+    r = query(client, 10)  # alice + bob
+    assert r.status_code == 422
+    assert "2 faces" in r.json()["detail"]
 
 
 def test_sync_endpoint(client, album_dir):
     (album_dir / "extra.png").write_bytes(png(30))
-    body = client.post("/api/v1/album/sync").json()
+    body = client.post("/album/sync").json()
     assert body["added"] == ["extra.png"]
     assert body["total_faces"] == 9
 
@@ -204,13 +202,20 @@ def test_no_face(client):
 
 
 def test_bad_image(client):
-    r = client.post("/api/v1/match", files={"file": ("q.png", b"not an image", "image/png")})
+    r = client.post("/match", files={"file": ("q.png", b"not an image", "image/png")})
     assert r.status_code == 400
 
 
 def test_unsupported_type(client):
-    r = client.post("/api/v1/match", files={"file": ("q.txt", b"hello", "text/plain")})
+    r = client.post("/match", files={"file": ("q.txt", b"hello", "text/plain")})
     assert r.status_code == 415
+    r = client.post("/match", files={"file": ("q.webp", png(20), "image/webp")})
+    assert r.status_code == 415
+
+
+def test_extension_is_case_insensitive_and_content_type_ignored(client):
+    r = client.post("/match", files={"file": ("Q.JPEG", png(20), "application/octet-stream")})
+    assert r.status_code == 200
 
 
 def test_empty_album(engine, tmp_path):
