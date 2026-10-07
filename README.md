@@ -1,4 +1,4 @@
-# Facerecognition
+# Face Recognition
 
 A FastAPI service for finding a person across a photo album. Put all your photos in one folder. A sync script detects **every face in every photo** and stores one embedding per face in an `.npz` file. Then upload a photo of someone, and the API returns every album photo that contains them.
 
